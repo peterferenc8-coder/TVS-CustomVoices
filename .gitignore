@@ -1,0 +1,11 @@
+# Build output
+bin/
+obj/
+*.user
+
+# Release artifacts (attached to GitHub releases, not committed)
+dist/
+
+# Game assemblies must never be committed (copyrighted)
+lib/
+*.dll

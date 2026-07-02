@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>CustomVoices</AssemblyName>
+    <RootNamespace>TVSCustomVoices</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <DebugType>portable</DebugType>
+    <Deterministic>true</Deterministic>
+    <Version>1.2.0</Version>
+
+    <!--
+      Path to a The Villain Simulator install that has BepInEx installed.
+      Building references the game's managed assemblies + BepInEx core (they are
+      NOT redistributed here). Override per-machine with either:
+        dotnet build -c Release -p:GameDir="/path/to/TheVillainSimulator-48a"
+      or set the TVS_GAME_DIR environment variable.
+    -->
+    <GameDir Condition="'$(GameDir)' == '' and '$(TVS_GAME_DIR)' != ''">$(TVS_GAME_DIR)</GameDir>
+    <GameDir Condition="'$(GameDir)' == ''">/mnt/a4913e87-f80e-482c-b952-bc14e68d9ea7/Stuff/TVS/TheVillainSimulator-48a</GameDir>
+
+    <Managed>$(GameDir)/TheVillainSimulator_Data/Managed</Managed>
+    <BepCore>$(GameDir)/BepInEx/core</BepCore>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx"><HintPath>$(BepCore)/BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(BepCore)/0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(Managed)/Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(Managed)/UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(Managed)/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.AudioModule"><HintPath>$(Managed)/UnityEngine.AudioModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.AnimationModule"><HintPath>$(Managed)/UnityEngine.AnimationModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>$(Managed)/UnityEngine.InputLegacyModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.InputSystem"><HintPath>$(Managed)/Unity.InputSystem.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <!-- Convenience: if a real game install is present, drop the built DLL straight
+       into its plugins folder for testing. Skipped when GameDir doesn't exist. -->
+  <Target Name="DeployToGame" AfterTargets="Build" Condition="Exists('$(GameDir)/BepInEx/plugins')">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GameDir)/BepInEx/plugins" />
+    <Message Importance="high" Text="[CustomVoices] Deployed to $(GameDir)/BepInEx/plugins" />
+  </Target>
+
+</Project>
