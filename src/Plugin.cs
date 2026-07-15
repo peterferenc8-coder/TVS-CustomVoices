@@ -19,7 +19,7 @@ namespace TVSCustomVoices
     {
         public const string GUID = "com.peter.tvs.customvoices";
         public const string NAME = "TVS Custom Voices";
-        public const string VERSION = "1.2.0";
+        public const string VERSION = "1.3.0";
 
         internal static ManualLogSource Log;
         internal static string VoicesRoot;
@@ -36,6 +36,16 @@ namespace TVSCustomVoices
                 "General", "GenerateFolderScaffold", true,
                 "On startup, create an empty <voice>/<bucket>/ folder tree for every known voice so you can see where to drop audio. Set false if you don't want the empty folders.");
             VoiceInjector.ScaffoldEnabled = scaffoldCfg.Value;
+
+            var customOnlyCfg = Config.Bind(
+                "General", "CustomVoicesOnly", false,
+                "When true, the original heroine voice is never heard: any line you've dubbed always plays your audio, and every other vanilla voice line is muted (the face/body animation still plays). When false, use SwapChancePercent.");
+            VoiceInjector.CustomVoicesOnly = customOnlyCfg.Value;
+
+            var chanceCfg = Config.Bind(
+                "General", "SwapChancePercent", 50,
+                "Chance (0-100) that a line you've dubbed plays your audio instead of the vanilla one. Only used when CustomVoicesOnly is false.");
+            VoiceInjector.SwapChancePercent = Math.Max(0, Math.Min(100, chanceCfg.Value));
 
             Log.LogInfo($"[CustomVoices] v{VERSION} loading. Audio root: {VoicesRoot}");
             new Harmony(GUID).PatchAll(typeof(Plugin).Assembly);
@@ -78,8 +88,9 @@ namespace TVSCustomVoices
         }
     }
 
-    // Fires every time a voice is assigned to a character. The freshly loaded
-    // ZNEReactionSet is the injection target.
+    // Fires every time a voice is assigned to a character. We index the freshly
+    // loaded ZNEReactionSet: which buckets have custom audio and which vanilla
+    // reactions belong to them.
     [HarmonyPatch(typeof(ZNECharacterReactionController), "reactionSet", MethodType.Setter)]
     internal static class ReactionSetSetterPatch
     {
@@ -87,7 +98,21 @@ namespace TVSCustomVoices
         {
             if (value == null) return;
             try { VoiceInjector.Inject(value); }
-            catch (Exception e) { Plugin.Log.LogError($"[CustomVoices] injection failed: {e}"); }
+            catch (Exception e) { Plugin.Log.LogError($"[CustomVoices] indexing failed: {e}"); }
+        }
+    }
+
+    // Fires just before any reaction plays. We swap the audio for a custom line
+    // (keeping the vanilla face pose / phonemes / emotion / gesture), or mute the
+    // vanilla voice in custom-only mode, by replacing the reaction argument.
+    [HarmonyPatch(typeof(ZNECharacterReactionController), "performSpecificReaction",
+        new[] { typeof(ZNEReaction), typeof(bool), typeof(bool) })]
+    internal static class PerformSpecificReactionPatch
+    {
+        private static void Prefix(ref ZNEReaction reaction)
+        {
+            try { VoiceInjector.OnBeforeReaction(ref reaction); }
+            catch (Exception e) { Plugin.Log.LogError($"[CustomVoices] swap failed: {e}"); }
         }
     }
 }

@@ -13,16 +13,36 @@ namespace TVSCustomVoices
         // Public ZNEReactionSetData fields on ZNEReactionSet (the "buckets").
         private static FieldInfo[] _bucketFields;
 
-        // Underlying bucket assets we've already appended to. ZNEReactionSet is
-        // a cached Resources asset, so the setter fires repeatedly with the same
-        // instance; this stops us appending the same clips more than once.
-        private static readonly HashSet<int> _injectedBuckets = new HashSet<int>();
-
         private static readonly Dictionary<string, AudioClip> _clipCache =
             new Dictionary<string, AudioClip>();
 
+        // Silent clips (for muting vanilla voice), keyed by sample count so a
+        // muted line keeps the original's duration and animation timing.
+        private static readonly Dictionary<int, AudioClip> _silentCache =
+            new Dictionary<int, AudioClip>();
+
         // Voices we've already logged the discovery line for.
         private static readonly HashSet<string> _announced = new HashSet<string>();
+
+        // Bucket data instances we've already scanned for custom audio.
+        private static readonly HashSet<int> _scanned = new HashSet<int>();
+
+        // A custom line ready to be swapped in.
+        private sealed class CustomLine
+        {
+            public AudioClip clip;
+            public ZNESubtitleData subtitle; // null => keep the vanilla subtitle
+            public string name;
+        }
+
+        // Custom audio available per bucket, keyed "<voice>|<bucket>".
+        private static readonly Dictionary<string, List<CustomLine>> _customByBucket =
+            new Dictionary<string, List<CustomLine>>();
+
+        // Every vanilla ZNEReaction that lives in a bucket which HAS custom audio,
+        // mapped to that bucket key. Reference-keyed (ZNEReaction is a plain class).
+        private static readonly Dictionary<ZNEReaction, string> _reactionBucket =
+            new Dictionary<ZNEReaction, string>();
 
         // The character voices (top-level ZNEReactionSet assets). These are the
         // ones that also ship a "safe_" variant. Pre-seeded so their full folder
@@ -38,6 +58,14 @@ namespace TVSCustomVoices
 
         // Set from the BepInEx config in Plugin.Awake.
         public static bool ScaffoldEnabled = true;
+
+        // When true, vanilla voice never plays: buckets with custom audio always
+        // swap to a custom line, and every other vanilla voice line is muted.
+        public static bool CustomVoicesOnly = false;
+
+        // Chance (0-100) that a reaction with custom audio plays a custom line
+        // instead of the vanilla one. Ignored when CustomVoicesOnly is true (100%).
+        public static int SwapChancePercent = 50;
 
         private static void EnsureBucketFields()
         {
@@ -72,6 +100,11 @@ namespace TVSCustomVoices
                 $"({made} new folders) under {Plugin.VoicesRoot}");
         }
 
+        // Fires when a voice is applied to a character. We don't append anything to
+        // the reaction arrays anymore — instead we index which custom audio exists
+        // for each bucket and remember every vanilla reaction in those buckets, so
+        // performSpecificReaction can swap audio at play time (keeping the vanilla
+        // face pose / phonemes / emotion / gesture).
         public static void Inject(ZNEReactionSet set)
         {
             EnsureBucketFields();
@@ -79,49 +112,206 @@ namespace TVSCustomVoices
             string voiceName = set.name; // == Resources asset name == folder name
             string voiceDir = Path.Combine(Plugin.VoicesRoot, voiceName);
 
-            // Make sure this voice's folders exist even if it wasn't pre-seeded
-            // (e.g. a "safe_" variant), so the user always has a place to drop audio.
             if (ScaffoldEnabled) EnsureVoiceFolders(voiceName);
 
             if (_announced.Add(voiceName))
             {
                 Plugin.Log.LogInfo(
                     $"[CustomVoices] Voice '{voiceName}' in use. Add lines under: {voiceDir}{Path.DirectorySeparatorChar}<bucket>{Path.DirectorySeparatorChar}*.wav");
-                Plugin.Log.LogInfo("[CustomVoices] Buckets: " +
-                    string.Join(", ", _bucketFields.Select(f => f.Name)));
             }
 
             if (!Directory.Exists(voiceDir)) return;
 
-            int totalAdded = 0;
+            int bucketsWithAudio = 0, linesIndexed = 0;
             foreach (var field in _bucketFields)
             {
+                if (!(field.GetValue(set) is ZNEReactionSetData data) || data == null) continue;
+                if (!_scanned.Add(data.GetInstanceID())) continue; // already indexed
+
                 string bucketDir = Path.Combine(voiceDir, field.Name);
                 if (!Directory.Exists(bucketDir)) continue;
 
-                if (!(field.GetValue(set) is ZNEReactionSetData data) || data == null) continue;
-                if (!_injectedBuckets.Add(data.GetInstanceID())) continue; // already done
-
-                var extra = new List<ZNEReaction>();
+                var lines = new List<CustomLine>();
                 foreach (var wav in Directory.GetFiles(bucketDir, "*.wav"))
                 {
                     var clip = LoadClip(wav);
                     if (clip == null) continue;
-                    extra.Add(BuildReaction(field.Name, wav, clip));
+                    lines.Add(new CustomLine
+                    {
+                        clip = clip,
+                        subtitle = BuildSubtitle(wav, clip.length),
+                        name = Path.GetFileNameWithoutExtension(wav),
+                    });
                 }
+                if (lines.Count == 0) continue;
 
-                if (extra.Count == 0) continue;
+                string key = voiceName + "|" + field.Name;
+                _customByBucket[key] = lines;
+                bucketsWithAudio++;
+                linesIndexed += lines.Count;
 
-                var merged = new List<ZNEReaction>(data.reactions ?? Array.Empty<ZNEReaction>());
-                merged.AddRange(extra);
-                data.reactions = merged.ToArray();
-                totalAdded += extra.Count;
+                // Remember every vanilla reaction in this bucket so we can catch it
+                // at play time and swap its audio.
+                if (data.reactions != null)
+                    foreach (var r in data.reactions)
+                        if (r != null) _reactionBucket[r] = key;
+
                 Plugin.Log.LogInfo(
-                    $"[CustomVoices] +{extra.Count} line(s) -> {voiceName}/{field.Name} (total now {data.reactions.Length})");
+                    $"[CustomVoices] {lines.Count} custom line(s) ready for {voiceName}/{field.Name}.");
             }
 
-            if (totalAdded > 0)
-                Plugin.Log.LogInfo($"[CustomVoices] Injected {totalAdded} custom line(s) into '{voiceName}'.");
+            if (bucketsWithAudio > 0)
+                Plugin.Log.LogInfo(
+                    $"[CustomVoices] Indexed {linesIndexed} custom line(s) across {bucketsWithAudio} bucket(s) for '{voiceName}'. " +
+                    $"Mode: {(CustomVoicesOnly ? "custom-only" : SwapChancePercent + "% swap chance")}.");
+        }
+
+        // ---- Play-time swap ----------------------------------------------------
+
+        // Called from the performSpecificReaction Harmony prefix. May replace the
+        // reaction with a clone whose audio is a custom line (or silence).
+        public static void OnBeforeReaction(ref ZNEReaction reaction)
+        {
+            if (reaction == null) return;
+
+            if (_reactionBucket.TryGetValue(reaction, out var key) &&
+                _customByBucket.TryGetValue(key, out var lines) && lines.Count > 0)
+            {
+                bool swap = CustomVoicesOnly || RollPercent(SwapChancePercent);
+                if (swap)
+                    reaction = BuildSwapped(reaction, PickRandom(lines));
+                // else: let the vanilla line play (only possible when !CustomVoicesOnly).
+                return;
+            }
+
+            // No custom audio for this reaction's bucket. In custom-only mode we
+            // still silence any vanilla voice it would produce (keeping animation).
+            if (CustomVoicesOnly && HasVoice(reaction))
+                reaction = BuildMuted(reaction);
+        }
+
+        private static bool HasVoice(ZNEReaction r)
+        {
+            return (r.lipSyncReaction != null && r.lipSyncReaction.clip != null) ||
+                   r.audioReaction != null;
+        }
+
+        private static bool RollPercent(int percent)
+        {
+            if (percent >= 100) return true;
+            if (percent <= 0) return false;
+            return UnityEngine.Random.Range(0, 100) < percent;
+        }
+
+        private static CustomLine PickRandom(List<CustomLine> lines)
+        {
+            return lines[UnityEngine.Random.Range(0, lines.Count)];
+        }
+
+        // Clone the vanilla reaction, swapping its audio for our custom clip while
+        // keeping its face pose, phonemes, emotion and gesture data.
+        private static ZNEReaction BuildSwapped(ZNEReaction vanilla, CustomLine line)
+        {
+            var clone = CloneReaction(vanilla);
+
+            if (vanilla.lipSyncReaction != null && vanilla.lipSyncReaction.clip != null)
+            {
+                // Dialogue line: reuse the vanilla LipSyncData's markers (phonemes,
+                // emotions, gestures) verbatim, only replacing the audio clip.
+                clone.lipSyncReaction = CloneLipSyncWithClip(vanilla.lipSyncReaction, line.clip);
+                clone.audioReaction = null; // avoid a second (gasp) audio channel
+            }
+            else if (vanilla.audioReaction != null)
+            {
+                // Gasp/grunt line: the face pose plays this clip directly.
+                clone.audioReaction = line.clip;
+            }
+            else
+            {
+                // Expression-only reaction (Positive/Mixed/Negative/Tickle/None with
+                // no audio). Give it a voice via the lip-sync path; keep the pose.
+                clone.lipSyncReaction = BuildBareLipSync(line.clip);
+            }
+
+            if (line.subtitle != null) clone.subtitleData = line.subtitle;
+            return clone;
+        }
+
+        // Clone the reaction but replace whatever audio it carries with silence of
+        // the same length, so the face pose / animation still plays but no vanilla
+        // voice is heard.
+        private static ZNEReaction BuildMuted(ZNEReaction vanilla)
+        {
+            var clone = CloneReaction(vanilla);
+            if (vanilla.lipSyncReaction != null && vanilla.lipSyncReaction.clip != null)
+                clone.lipSyncReaction = CloneLipSyncWithClip(
+                    vanilla.lipSyncReaction, SilentLike(vanilla.lipSyncReaction.clip));
+            if (vanilla.audioReaction != null)
+                clone.audioReaction = SilentLike(vanilla.audioReaction);
+            return clone;
+        }
+
+        private static ZNEReaction CloneReaction(ZNEReaction src)
+        {
+            return new ZNEReaction
+            {
+                reactionName = src.reactionName,
+                lipSyncReaction = src.lipSyncReaction,
+                audioReaction = src.audioReaction,
+                faceReactionAnimation = src.faceReactionAnimation,
+                bypassShouldNotReact = src.bypassShouldNotReact,
+                priority = src.priority,
+                subtitleData = src.subtitleData,
+            };
+        }
+
+        // A copy of the vanilla LipSyncData carrying a different clip. Marker arrays
+        // are reused by reference (the game only reads them), so the mouth / emotion
+        // / gesture animation is exactly the vanilla one — "copy vanilla phonemes".
+        private static LipSyncData CloneLipSyncWithClip(LipSyncData src, AudioClip clip)
+        {
+            var data = ScriptableObject.CreateInstance<LipSyncData>();
+            data.clip = clip;
+            data.length = src.length; // keep vanilla timing so markers line up
+            data.version = src.version;
+            data.isPreprocessed = src.isPreprocessed;
+            data.transcript = src.transcript;
+            data.phonemeData = src.phonemeData;
+            data.emotionData = src.emotionData;
+            data.gestureData = src.gestureData;
+            return data;
+        }
+
+        // A LipSyncData that just carries a clip (single intensity-0 "Rest" phoneme
+        // so LipSync.LoadData accepts it). Used for expression-only reactions.
+        private static LipSyncData BuildBareLipSync(AudioClip clip)
+        {
+            var data = ScriptableObject.CreateInstance<LipSyncData>();
+            data.clip = clip;
+            data.length = clip.length;
+            data.version = 1f;
+            data.isPreprocessed = false;
+            data.transcript = string.Empty;
+            data.phonemeData = new[]
+            {
+                new PhonemeMarker((int)Phoneme.Rest, 0f, 0f, false) { phoneme = Phoneme.Rest, intensity = 0f }
+            };
+            data.emotionData = Array.Empty<EmotionMarker>();
+            data.gestureData = Array.Empty<GestureMarker>();
+            return data;
+        }
+
+        // A silent clip matching another clip's shape, so a muted line keeps the
+        // original duration (and thus animation timing).
+        private static AudioClip SilentLike(AudioClip src)
+        {
+            int samples = Mathf.Max(1, src.samples);
+            if (_silentCache.TryGetValue(samples, out var cached) && cached != null)
+                return cached;
+            var silent = AudioClip.Create("cv_silent_" + samples, samples,
+                Mathf.Max(1, src.channels), Mathf.Max(1000, src.frequency), false);
+            _silentCache[samples] = silent; // data defaults to zeros = silence
+            return silent;
         }
 
         private static AudioClip LoadClip(string path)
@@ -140,59 +330,19 @@ namespace TVSCustomVoices
             }
         }
 
-        private static ZNEReaction BuildReaction(string bucket, string wavPath, AudioClip clip)
-        {
-            return new ZNEReaction
-            {
-                reactionName = "CV_" + bucket + "_" + Path.GetFileNameWithoutExtension(wavPath),
-                // Audio is delivered via the lip-sync path (lipSyncReaction), exactly
-                // like the game's normal spoken lines. Leave audioReaction null and the
-                // face animation None so nothing double-plays / no gasp pose triggers.
-                audioReaction = null,
-                faceReactionAnimation = ZNEReactionType.None,
-                lipSyncReaction = BuildLipSync(clip),
-                subtitleData = BuildSubtitle(wavPath, clip.length),
-                priority = 50,
-                bypassShouldNotReact = false
-            };
-        }
-
-        // A LipSyncData carrying only the clip. LipSync.LoadData() refuses to play
-        // when phoneme/emotion/gesture data are ALL empty, so we add a single
-        // "Rest" phoneme at intensity 0 -> passes the check, no visible mouth motion.
-        private static LipSyncData BuildLipSync(AudioClip clip)
-        {
-            var data = ScriptableObject.CreateInstance<LipSyncData>();
-            data.clip = clip;
-            data.length = clip.length;
-            data.version = 1f;
-            data.isPreprocessed = false;
-            data.transcript = string.Empty;
-            data.phonemeData = new[]
-            {
-                new PhonemeMarker((int)Phoneme.Rest, 0f, 0f, false) { phoneme = Phoneme.Rest, intensity = 0f }
-            };
-            data.emotionData = Array.Empty<EmotionMarker>();
-            data.gestureData = Array.Empty<GestureMarker>();
-            return data;
-        }
-
-        // Subtitle comes from a sibling .txt file (same name as the .wav). Always
-        // returns a non-null object so ZNESubtitleManager.Show() never gets null.
+        // Subtitle comes from a sibling .txt file (same name as the .wav). Returns
+        // null when there's no .txt, so the caller keeps the vanilla subtitle.
         private static ZNESubtitleData BuildSubtitle(string wavPath, float clipLength)
         {
-            var sd = new ZNESubtitleData { subtitles = new List<ZNESubtitleData.SubtitleLine>() };
-
             string txtPath = Path.ChangeExtension(wavPath, ".txt");
-            if (File.Exists(txtPath))
-            {
-                string text = File.ReadAllText(txtPath).Trim();
-                if (text.Length > 0)
-                {
-                    float onScreen = Mathf.Max(1.5f, clipLength);
-                    sd.subtitles.Add(new ZNESubtitleData.SubtitleLine(text, onScreen, false));
-                }
-            }
+            if (!File.Exists(txtPath)) return null;
+
+            string text = File.ReadAllText(txtPath).Trim();
+            if (text.Length == 0) return null;
+
+            var sd = new ZNESubtitleData { subtitles = new List<ZNESubtitleData.SubtitleLine>() };
+            float onScreen = Mathf.Max(1.5f, clipLength);
+            sd.subtitles.Add(new ZNESubtitleData.SubtitleLine(text, onScreen, false));
             return sd;
         }
 
@@ -206,36 +356,39 @@ namespace TVSCustomVoices
             return ctrl;
         }
 
-        // F8: force-play one of OUR injected ("CV_") lines, bypassing all the
-        // game's "should react?" gating. Confirms audio + subtitle end-to-end.
+        // '+': force-play one of YOUR custom lines for the active voice, bypassing
+        // gating and the swap chance. Confirms audio + subtitle end-to-end.
         public static void DebugPlayInjected()
         {
-            EnsureBucketFields();
             var ctrl = FindController();
             if (ctrl == null) return;
             var set = ctrl.reactionSet;
             if (set == null) { Plugin.Log.LogWarning("[CustomVoices] Character has no reactionSet."); return; }
 
-            foreach (var field in _bucketFields)
+            string prefix = set.name + "|";
+            foreach (var kv in _customByBucket)
             {
-                if (!(field.GetValue(set) is ZNEReactionSetData data) || data?.reactions == null) continue;
-                foreach (var r in data.reactions)
+                if (!kv.Key.StartsWith(prefix) || kv.Value.Count == 0) continue;
+                var line = kv.Value[0];
+                var reaction = new ZNEReaction
                 {
-                    if (r?.reactionName == null || !r.reactionName.StartsWith("CV_")) continue;
-                    string clip = r.lipSyncReaction != null && r.lipSyncReaction.clip != null
-                        ? r.lipSyncReaction.clip.name : "NULL";
-                    Plugin.Log.LogInfo($"[CustomVoices] F8: playing '{r.reactionName}' from {field.Name} (clip={clip}, len={r.Length():0.00}s).");
-                    ctrl.performSpecificReaction(r, true, false);
-                    return;
-                }
+                    reactionName = "CV_debug_" + line.name,
+                    lipSyncReaction = BuildBareLipSync(line.clip),
+                    faceReactionAnimation = ZNEReactionType.None,
+                    subtitleData = line.subtitle,
+                    priority = 50,
+                };
+                Plugin.Log.LogInfo($"[CustomVoices] +: playing '{line.name}' from {kv.Key} (len={line.clip.length:0.00}s).");
+                ctrl.performSpecificReaction(reaction, true, false);
+                return;
             }
             Plugin.Log.LogWarning(
-                $"[CustomVoices] F8: no injected (CV_) line found in voice '{set.name}'. " +
+                $"[CustomVoices] +: no custom line found for voice '{set.name}'. " +
                 $"Add WAVs under CustomVoices/{set.name}/<bucket>/ and RESTART the game.");
         }
 
-        // F9: play a random idle line (vanilla or custom). Confirms audio works
-        // at all + tells you which mood bucket is active on this character.
+        // '#': play a random idle line (vanilla or, via the swap prefix, custom) and
+        // report which mood bucket is active on this character.
         public static void DebugPlayRandomIdle()
         {
             EnsureBucketFields();
@@ -248,11 +401,11 @@ namespace TVSCustomVoices
             {
                 if (!field.Name.EndsWith("IdleReactions")) continue;
                 if (!(field.GetValue(set) is ZNEReactionSetData data) || data?.reactions == null || data.reactions.Length == 0) continue;
-                Plugin.Log.LogInfo($"[CustomVoices] F9: playing a random line from {field.Name} ({data.reactions.Length} total).");
+                Plugin.Log.LogInfo($"[CustomVoices] #: playing a random line from {field.Name} ({data.reactions.Length} total).");
                 ctrl.performRandomReactionFrom(data, true, false);
                 return;
             }
-            Plugin.Log.LogWarning("[CustomVoices] F9: no non-empty idle bucket found on this character.");
+            Plugin.Log.LogWarning("[CustomVoices] #: no non-empty idle bucket found on this character.");
         }
     }
 }
