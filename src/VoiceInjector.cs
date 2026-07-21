@@ -362,7 +362,7 @@ namespace TVSCustomVoices
         {
             var ctrl = FindController();
             if (ctrl == null) return;
-            var set = ctrl.reactionSet;
+            var set = GameCompat.GetReactionSet(ctrl);
             if (set == null) { Plugin.Log.LogWarning("[CustomVoices] Character has no reactionSet."); return; }
 
             string prefix = set.name + "|";
@@ -379,7 +379,7 @@ namespace TVSCustomVoices
                     priority = 50,
                 };
                 Plugin.Log.LogInfo($"[CustomVoices] +: playing '{line.name}' from {kv.Key} (len={line.clip.length:0.00}s).");
-                ctrl.performSpecificReaction(reaction, true, false);
+                GameCompat.PerformSpecificReaction(ctrl, reaction, set.name);
                 return;
             }
             Plugin.Log.LogWarning(
@@ -394,7 +394,7 @@ namespace TVSCustomVoices
             EnsureBucketFields();
             var ctrl = FindController();
             if (ctrl == null) return;
-            var set = ctrl.reactionSet;
+            var set = GameCompat.GetReactionSet(ctrl);
             if (set == null) { Plugin.Log.LogWarning("[CustomVoices] Character has no reactionSet."); return; }
 
             foreach (var field in _bucketFields)
@@ -402,7 +402,7 @@ namespace TVSCustomVoices
                 if (!field.Name.EndsWith("IdleReactions")) continue;
                 if (!(field.GetValue(set) is ZNEReactionSetData data) || data?.reactions == null || data.reactions.Length == 0) continue;
                 Plugin.Log.LogInfo($"[CustomVoices] #: playing a random line from {field.Name} ({data.reactions.Length} total).");
-                ctrl.performRandomReactionFrom(data, true, false);
+                GameCompat.PerformRandomReactionFrom(ctrl, data, set.name);
                 return;
             }
             Plugin.Log.LogWarning("[CustomVoices] #: no non-empty idle bucket found on this character.");

@@ -3,6 +3,9 @@ bin/
 obj/
 *.user
 
+# Per-machine build settings (path to the local game install)
+Local.props
+
 # Release artifacts (attached to GitHub releases, not committed)
 dist/
 

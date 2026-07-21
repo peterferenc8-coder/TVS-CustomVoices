@@ -1,5 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    Optional per-machine settings (not committed). Copy Local.props.example to
+    Local.props and point GameDir at your own install so you can just run
+    `dotnet build`. See "Building from source" in README.md.
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)Local.props"
+          Condition="Exists('$(MSBuildThisFileDirectory)Local.props')" />
+
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>CustomVoices</AssemblyName>
@@ -10,21 +18,33 @@
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <DebugType>portable</DebugType>
     <Deterministic>true</Deterministic>
-    <Version>1.2.0</Version>
+    <!-- Keep in sync with Plugin.VERSION. -->
+    <Version>1.4.0</Version>
 
     <!--
-      Path to a The Villain Simulator install that has BepInEx installed.
-      Building references the game's managed assemblies + BepInEx core (they are
-      NOT redistributed here). Override per-machine with either:
-        dotnet build -c Release -p:GameDir="/path/to/TheVillainSimulator-48a"
-      or set the TVS_GAME_DIR environment variable.
+      Path to YOUR The Villain Simulator install (the folder holding
+      TheVillainSimulator.exe) with BepInEx installed. Building references the
+      game's managed assemblies + BepInEx core; they are NOT redistributed here,
+      so there is deliberately no default - set one of, in priority order:
+        1. dotnet build -c Release -p:GameDir="/path/to/TheVillainSimulator"
+        2. src/Local.props            (copy from Local.props.example)
+        3. the TVS_GAME_DIR environment variable
     -->
     <GameDir Condition="'$(GameDir)' == '' and '$(TVS_GAME_DIR)' != ''">$(TVS_GAME_DIR)</GameDir>
-    <GameDir Condition="'$(GameDir)' == ''">/mnt/a4913e87-f80e-482c-b952-bc14e68d9ea7/Stuff/TVS/TheVillainSimulator-48a</GameDir>
 
     <Managed>$(GameDir)/TheVillainSimulator_Data/Managed</Managed>
     <BepCore>$(GameDir)/BepInEx/core</BepCore>
   </PropertyGroup>
+
+  <!-- Fail with an explanation rather than 200 "type or namespace not found". -->
+  <Target Name="ValidateGameDir" BeforeTargets="BeforeBuild;ResolveAssemblyReferences">
+    <Error Condition="'$(GameDir)' == ''"
+           Text="GameDir is not set. Pass -p:GameDir=&quot;/path/to/TheVillainSimulator&quot;, set the TVS_GAME_DIR environment variable, or copy src/Local.props.example to src/Local.props. See README.md." />
+    <Error Condition="!Exists('$(Managed)/Assembly-CSharp.dll')"
+           Text="No game assemblies at '$(Managed)'. GameDir ('$(GameDir)') must be the folder containing TheVillainSimulator.exe." />
+    <Error Condition="!Exists('$(BepCore)/BepInEx.dll')"
+           Text="No BepInEx at '$(BepCore)'. Install BepInEx 5.4.x (x64, Mono) into '$(GameDir)' and run the game once before building." />
+  </Target>
 
   <ItemGroup>
     <Reference Include="BepInEx"><HintPath>$(BepCore)/BepInEx.dll</HintPath><Private>false</Private></Reference>
@@ -38,9 +58,10 @@
     <Reference Include="Unity.InputSystem"><HintPath>$(Managed)/Unity.InputSystem.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
-  <!-- Convenience: if a real game install is present, drop the built DLL straight
-       into its plugins folder for testing. Skipped when GameDir doesn't exist. -->
-  <Target Name="DeployToGame" AfterTargets="Build" Condition="Exists('$(GameDir)/BepInEx/plugins')">
+  <!-- Convenience for development: drop the built DLL straight into the plugins
+       folder of the install we built against. Opt out with -p:Deploy=false. -->
+  <Target Name="DeployToGame" AfterTargets="Build"
+          Condition="'$(Deploy)' != 'false' and Exists('$(GameDir)/BepInEx/plugins')">
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GameDir)/BepInEx/plugins" />
     <Message Importance="high" Text="[CustomVoices] Deployed to $(GameDir)/BepInEx/plugins" />
   </Target>

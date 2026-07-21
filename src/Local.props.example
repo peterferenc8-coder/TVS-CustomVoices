@@ -1,0 +1,17 @@
+<!--
+  Per-machine build settings. Copy this file to "Local.props" (same folder) and
+  set GameDir to your own The Villain Simulator install - the folder that holds
+  TheVillainSimulator.exe and, once BepInEx is installed, BepInEx/.
+
+  Local.props is gitignored, so your path stays out of the repository.
+-->
+<Project>
+  <PropertyGroup>
+    <!-- Linux / macOS -->
+    <GameDir>/path/to/TheVillainSimulator</GameDir>
+
+    <!-- Windows (note the forward slashes or doubled backslashes)
+    <GameDir>C:/Program Files (x86)/Steam/steamapps/common/The Villain Simulator</GameDir>
+    -->
+  </PropertyGroup>
+</Project>

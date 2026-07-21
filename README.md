@@ -165,15 +165,47 @@ the `BepInEx/` folder from the game directory.
 ## Building from source
 
 Requires the .NET SDK and a game install that has BepInEx (for the reference
-assemblies — they are not redistributed here).
+assemblies — they are not redistributed here). There is no default path baked
+into the project; point `GameDir` at *your* install, in any of these ways:
 
 ```
-dotnet build src/CustomVoices.csproj -c Release -p:GameDir="/path/to/TheVillainSimulator-48a"
+# 1. one-off
+dotnet build src/CustomVoices.csproj -c Release -p:GameDir="/path/to/TheVillainSimulator"
+
+# 2. persistent, per machine (Local.props is gitignored)
+cp src/Local.props.example src/Local.props   # then edit GameDir in it
+dotnet build src/CustomVoices.csproj -c Release
+
+# 3. environment variable
+export TVS_GAME_DIR="/path/to/TheVillainSimulator"
+dotnet build src/CustomVoices.csproj -c Release
 ```
 
-(Or set the `TVS_GAME_DIR` environment variable instead of `-p:GameDir`.) The
-output `CustomVoices.dll` is written to `src/bin/Release/`, and also copied into
-the game's `BepInEx/plugins/` if that folder exists.
+`GameDir` is the folder containing `TheVillainSimulator.exe`. If it's missing or
+wrong the build stops with an explanation instead of a wall of "type not found".
+
+The output `CustomVoices.dll` is written to `src/bin/Release/`, and also copied
+into that install's `BepInEx/plugins/` — pass `-p:Deploy=false` to skip the copy.
+
+## Game version compatibility
+
+The game's reaction API changes between builds — for example
+`performSpecificReaction` gained a third parameter (`arousalException`) at some
+point. The mod therefore resolves every game method it touches **by name at
+runtime** and adapts to whatever parameter list your build declares, instead of
+binding to a fixed signature.
+
+If something still doesn't match, the mod logs what it found and keeps running
+with voice swapping disabled, rather than failing to load. Look for these lines
+in `BepInEx/LogOutput.log`:
+
+```
+[CustomVoices] Game API: performSpecificReaction=(ZNEReaction, Boolean, Boolean), ...
+[CustomVoices] Unsupported game build. ZNECharacterReactionController exposes: ...
+```
+
+The second block lists your build's actual signatures — include it when
+reporting an incompatibility.
 
 ## How it works
 
